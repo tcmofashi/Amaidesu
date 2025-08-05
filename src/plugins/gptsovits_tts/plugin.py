@@ -23,6 +23,10 @@ try:
 except ImportError:
     print("依赖缺失: 请运行 'pip install sounddevice soundfile' 来使用音频播放功能。", file=sys.stderr)
     dependencies_ok = False
+except OSError:
+    # print("依赖缺失: sounddevice 需要 PortAudio 库，请安装 PortAudio。", file=sys.stderr)
+    # dependencies_ok = False
+    sd = None
 
 # --- 远程流支持 ---
 try:

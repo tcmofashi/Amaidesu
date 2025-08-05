@@ -55,6 +55,9 @@ try:
 except ImportError:
     print("依赖缺失: 请运行 'pip install sounddevice' 来使用音频输入。", file=sys.stderr)
     sd = None
+except OSError:
+    # print("依赖缺失: sounddevice 需要 PortAudio 库，请安装 PortAudio。", file=sys.stderr)
+    sd = None
 try:
     import aiohttp
 except ImportError:
@@ -119,10 +122,10 @@ class STTPlugin(BasePlugin):
         self.config = self.plugin_config  # 直接使用注入的 plugin_config
         # self.logger = logger  # 已由基类初始化
 
-        # --- Basic Dependency Check ---
-        if torch is None or sd is None or aiohttp is None or tomllib is None:
-            self.logger.error("缺少核心依赖 (torch, sounddevice, aiohttp, toml)，STT 插件禁用。")
-            return
+        # # --- Basic Dependency Check ---
+        # if torch is None or sd is None or aiohttp is None or tomllib is None:
+        #     self.logger.error("缺少核心依赖 (torch, sounddevice, aiohttp, toml)，STT 插件禁用。")
+        #     return
 
         # --- Load Specific Config Sections ---
         self.iflytek_config = self.config.get("iflytek_asr", {})

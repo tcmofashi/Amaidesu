@@ -14,7 +14,6 @@ from src.core.amaidesu_core import AmaidesuCore
 from .client.websocket_client import BiliWebSocketClient
 from .service.message_cache import MessageCacheService
 from .service.message_handler import BiliMessageHandler
-import traceback
 
 
 class BiliDanmakuOfficialPlugin(BasePlugin):
@@ -78,7 +77,7 @@ class BiliDanmakuOfficialPlugin(BasePlugin):
 
         # --- 添加退出机制相关属性 ---
         self.shutdown_timeout = self.config.get("shutdown_timeout", 30)  # 30秒超时
-        self.cleanup_lock = threading.Lock()
+        self.cleanup_lock = asyncio.Lock()
         self.is_shutting_down = False
 
         # --- 注册信号处理器 ---
@@ -171,11 +170,12 @@ class BiliDanmakuOfficialPlugin(BasePlugin):
 
     async def cleanup(self):
         """清理资源"""
-        with self.cleanup_lock:
+        async with self.cleanup_lock:
             if self.is_shutting_down and hasattr(self, "_cleanup_done"):
                 return  # 避免重复清理
 
             self.logger.info("开始清理 BiliDanmakuOfficial 插件资源...")
+            self.is_shutting_down = True
 
             try:
                 # 设置停止事件
@@ -186,7 +186,7 @@ class BiliDanmakuOfficialPlugin(BasePlugin):
                     self.logger.info("取消监控任务...")
                     self.monitoring_task.cancel()
                     try:
-                        await asyncio.wait_for(self.monitoring_task, timeout=10)
+                        await asyncio.wait_for(self.monitoring_task, timeout=2.0)  # 减少到2秒
                     except (asyncio.CancelledError, asyncio.TimeoutError):
                         self.logger.info("监控任务已取消或超时")
 

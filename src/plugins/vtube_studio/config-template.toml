@@ -54,6 +54,13 @@ llm_model = "deepseek-chat"                    # LLM模型名称
 llm_temperature = 0.1                          # LLM温度参数，越低越稳定
 llm_max_tokens = 100                           # LLM最大返回token数
 
+# 消息类型处理配置（从Warudo迁移）
+[vtube_studio.message_types]
+emotion_enabled = true     # 是否处理情绪(emotion)类型的消息
+body_action_enabled = true # 是否处理身体动作(body_action)类型的消息
+head_action_enabled = true # 是否处理头部动作(head_action)类型的消息
+vtb_text_enabled = true    # 是否处理旧版的vtb_text类型的消息（已废弃但保留兼容性）
+
 # 预设表情/热键映射配置
 # 可以根据实际的VTube Studio热键名称进行调整
 [vtube_studio.emotion_hotkey_mapping]

@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, TYPE_CHECKING, List
 import numpy as np
 import threading
 import time
+import json
 from collections import deque
 
 from maim_message.message_base import MessageBase
@@ -92,6 +93,13 @@ class VTubeStudioPlugin(BasePlugin):
         self.llm_model = self.config.get("llm_model", "deepseek-chat")
         self.llm_temperature = self.config.get("llm_temperature", 0.1)
         self.llm_max_tokens = self.config.get("llm_max_tokens", 100)
+
+        # 消息类型处理配置
+        message_types_config = self.config.get("message_types", {})
+        self.vtb_text_enabled = message_types_config.get("vtb_text_enabled", True)
+        self.emotion_enabled = message_types_config.get("emotion_enabled", True)
+        self.body_action_enabled = message_types_config.get("body_action_enabled", True)
+        self.head_action_enabled = message_types_config.get("head_action_enabled", True)
 
         # 预设的表情/热键库
         self.emotion_hotkey_mapping = self.config.get(
@@ -412,8 +420,8 @@ class VTubeStudioPlugin(BasePlugin):
         if not message.message_segment:
             return
 
-        # 处理 vtb_text 类型的消息段（新的LLM匹配功能）
-        if message.message_segment.type == "vtb_text":
+        # 处理 vtb_text 类型的消息段（旧功能，已被废弃但保留兼容性）
+        if message.message_segment.type == "vtb_text" and self.vtb_text_enabled:
             text_data = message.message_segment.data
             if not isinstance(text_data, str) or not text_data.strip():
                 self.logger.debug("收到非字符串或空的vtb_text消息段，跳过")
@@ -430,6 +438,48 @@ class VTubeStudioPlugin(BasePlugin):
                     await self.trigger_hotkey(best_hotkey)
                 else:
                     self.logger.debug(f"未找到与vtb_text匹配的热键: {text_data}")
+
+        # 处理 emotion 类型的消息段（从Warudo迁移）
+        elif message.message_segment.type == "emotion" and self.emotion_enabled:
+            emotion_data = message.message_segment.data
+            self.logger.info(f"收到emotion消息: '{emotion_data}'")
+            # 处理心情数据，更新表情
+            await self._handle_emotion_data(emotion_data)
+
+        # 处理 body_action 类型的消息段（从Warudo迁移）
+        elif message.message_segment.type == "body_action" and self.body_action_enabled:
+            body_action_data = message.message_segment.data
+            self.logger.info(f"收到body_action消息: '{body_action_data}'")
+            # 在VTubeStudio中，我们可以通过触发特定热键来模拟身体动作
+            await self._handle_body_action(body_action_data)
+
+        # 处理 head_action 类型的消息段（从Warudo迁移）
+        elif message.message_segment.type == "head_action" and self.head_action_enabled:
+            head_action_data = message.message_segment.data
+            self.logger.info(f"收到head_action消息: '{head_action_data}'")
+            # 在VTubeStudio中，我们可以通过触发特定热键或参数来模拟头部动作
+            await self._handle_head_action(head_action_data)  # 处理 emotion 类型的消息段（从Warudo迁移）
+        elif message.message_segment.type == "emotion":
+            emotion_data = message.message_segment.data
+            self.logger.info(f"收到emotion消息: '{emotion_data}'")
+            # 处理心情数据，更新表情
+            await self._handle_emotion_data(emotion_data)
+
+        # 处理 body_action 类型的消息段（从Warudo迁移）
+        elif message.message_segment.type == "body_action":
+            body_action_data = message.message_segment.data
+            self.logger.info(f"收到body_action消息: '{body_action_data}'")
+            # 在VTubeStudio中，我们可以通过触发特定热键来模拟身体动作
+            await self._handle_body_action(body_action_data)
+
+        # 处理 head_action 类型的消息段（从Warudo迁移）
+        elif message.message_segment.type == "head_action":
+            head_action_data = message.message_segment.data
+            self.logger.info(f"收到head_action消息: '{head_action_data}'")
+            # 在VTubeStudio中，我们可以通过触发特定热键或参数来模拟头部动作
+            await self._handle_head_action(head_action_data)
+        else:
+            self.logger.debug(f"未找到与vtb_text匹配的热键: {text_data}")
 
     async def trigger_hotkey(self, hotkey_id: str) -> bool:
         """
@@ -546,6 +596,178 @@ class VTubeStudioPlugin(BasePlugin):
         微笑控制,1 为嘻嘻,0 为不嘻嘻
         """
         return await self.set_parameter_value("MouthSmile", value)
+
+    async def _handle_emotion_data(self, emotion_data: Any):
+        """
+        处理从MaiCore收到的心情数据，映射到VTubeStudio热键
+
+        Args:
+            emotion_data: 心情数据，可能是字典或JSON字符串
+        """
+        try:
+            # 解析心情数据
+            mood_data = None
+            if isinstance(emotion_data, dict):
+                mood_data = emotion_data
+            elif isinstance(emotion_data, str):
+                try:
+                    mood_data = json.loads(emotion_data)
+                except json.JSONDecodeError:
+                    self.logger.error(f"无法解析emotion消息JSON: {emotion_data}")
+                    return
+            else:
+                self.logger.warning(f"不支持的emotion数据类型: {type(emotion_data)}")
+                return
+
+            self.logger.debug(f"解析后的心情数据: {mood_data}")
+
+            # 获取心情类型
+            mood_type = mood_data.get("type", "")
+
+            # 查找对应的热键映射
+            if mood_type and mood_type in self.emotion_hotkey_mapping:
+                # 获取匹配的热键关键词列表
+                matching_keywords = self.emotion_hotkey_mapping[mood_type]
+
+                # 遍历热键列表，寻找匹配的热键
+                for hotkey in self.hotkey_list:
+                    hotkey_name = hotkey.get("name", "").lower()
+                    for keyword in matching_keywords:
+                        if keyword.lower() in hotkey_name:
+                            # 找到匹配的热键，触发它
+                            hotkey_id = hotkey.get("id")
+                            if hotkey_id:
+                                self.logger.info(f"基于心情 '{mood_type}' 触发热键: {hotkey_name}")
+                                await self.trigger_hotkey(hotkey_id)
+                                return
+
+                self.logger.warning(f"未找到与心情 '{mood_type}' 匹配的热键")
+            else:
+                self.logger.debug(f"未配置心情 '{mood_type}' 的热键映射")
+
+        except Exception as e:
+            self.logger.error(f"处理emotion数据时出错: {e}", exc_info=True)
+
+    async def _handle_body_action(self, action_data: Any):
+        """
+        处理从MaiCore收到的身体动作数据，映射到VTubeStudio热键
+
+        Args:
+            action_data: 动作数据，可能是字符串或其他类型
+        """
+        try:
+            action_str = str(action_data).lower()
+            self.logger.debug(f"处理body_action: {action_str}")
+
+            # 简单映射一些常见的动作到热键
+            # 注意：这里假设VTubeStudio中已经配置了这些热键
+            action_hotkey_mapping = {
+                "bow": ["鞠躬", "bow"],
+                "wave": ["挥手", "wave"],
+                "dance": ["跳舞", "dance"],
+                "jump": ["跳跃", "jump"],
+                "nod": ["点头", "nod"],
+                "shake": ["摇头", "shake"],
+            }
+
+            # 遍历映射寻找匹配的动作
+            for _, keywords in action_hotkey_mapping.items():
+                if any(keyword in action_str for keyword in keywords):
+                    # 遍历热键列表寻找匹配的热键
+                    for hotkey in self.hotkey_list:
+                        hotkey_name = hotkey.get("name", "").lower()
+                        if any(keyword in hotkey_name for keyword in keywords):
+                            hotkey_id = hotkey.get("id")
+                            if hotkey_id:
+                                self.logger.info(f"基于body_action '{action_str}' 触发热键: {hotkey_name}")
+                                await self.trigger_hotkey(hotkey_id)
+                                return
+
+            # 如果没有找到匹配的热键，使用LLM进行匹配
+            if self.llm_matching_enabled:
+                best_hotkey = await self._find_best_matching_hotkey_with_llm(action_str)
+                if best_hotkey:
+                    self.logger.info(f"基于LLM为body_action触发热键: {best_hotkey}")
+                    await self.trigger_hotkey(best_hotkey)
+                    return
+
+            self.logger.warning(f"未找到与body_action '{action_str}' 匹配的热键")
+
+        except Exception as e:
+            self.logger.error(f"处理body_action数据时出错: {e}", exc_info=True)
+
+    async def _handle_head_action(self, action_data: Any):
+        """
+        处理从MaiCore收到的头部动作数据，映射到VTubeStudio参数或热键
+
+        Args:
+            action_data: 动作数据，可能是字符串或其他类型
+        """
+        try:
+            action_str = str(action_data).lower()
+            self.logger.debug(f"处理head_action: {action_str}")
+
+            # 某些头部动作可以映射到参数值
+            # 注意：参数名称需要根据实际VTubeStudio模型调整
+            if "left" in action_str:
+                # 头向左转
+                await self.set_parameter_value("HeadAngleX", -15)
+                self.logger.info("设置头部向左转")
+                return
+            elif "right" in action_str:
+                # 头向右转
+                await self.set_parameter_value("HeadAngleX", 15)
+                self.logger.info("设置头部向右转")
+                return
+            elif "up" in action_str:
+                # 头向上抬
+                await self.set_parameter_value("HeadAngleY", 15)
+                self.logger.info("设置头部向上抬")
+                return
+            elif "down" in action_str:
+                # 头向下低
+                await self.set_parameter_value("HeadAngleY", -15)
+                self.logger.info("设置头部向下低")
+                return
+            elif "tilt" in action_str:
+                # 头部倾斜
+                await self.set_parameter_value("HeadAngleZ", 10)
+                self.logger.info("设置头部倾斜")
+                return
+            elif "reset" in action_str or "center" in action_str:
+                # 重置头部位置
+                await self.set_parameter_value("HeadAngleX", 0)
+                await self.set_parameter_value("HeadAngleY", 0)
+                await self.set_parameter_value("HeadAngleZ", 0)
+                self.logger.info("重置头部位置")
+                return
+
+            # 如果没有直接映射到参数，尝试使用热键
+            # 遍历热键列表寻找匹配的热键
+            head_keywords = ["head", "头部", "点头", "摇头", "头"]
+            for hotkey in self.hotkey_list:
+                hotkey_name = hotkey.get("name", "").lower()
+                if any(keyword in hotkey_name for keyword in head_keywords) and any(
+                    keyword in action_str for keyword in ["nod", "shake", "点头", "摇头"]
+                ):
+                    hotkey_id = hotkey.get("id")
+                    if hotkey_id:
+                        self.logger.info(f"基于head_action '{action_str}' 触发热键: {hotkey_name}")
+                        await self.trigger_hotkey(hotkey_id)
+                        return
+
+            # 如果没有找到匹配的热键，使用LLM进行匹配
+            if self.llm_matching_enabled:
+                best_hotkey = await self._find_best_matching_hotkey_with_llm(action_str)
+                if best_hotkey:
+                    self.logger.info(f"基于LLM为head_action触发热键: {best_hotkey}")
+                    await self.trigger_hotkey(best_hotkey)
+                    return
+
+            self.logger.warning(f"未找到与head_action '{action_str}' 匹配的热键或参数")
+
+        except Exception as e:
+            self.logger.error(f"处理head_action数据时出错: {e}", exc_info=True)
 
     async def load_item(
         self,

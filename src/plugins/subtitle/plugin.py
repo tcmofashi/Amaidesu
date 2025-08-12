@@ -121,8 +121,8 @@ class OutlineLabel:
         bg_color = self._background_color if self._background_color else "gray15"
         try:
             self.canvas.configure(bg=bg_color)
-            if self.logger:
-                self.logger.debug(f"Canvas背景色已设置为: {bg_color}")
+            # if self.logger:
+            #     self.logger.debug(f"Canvas背景色已设置为: {bg_color}")
         except Exception as e:
             if self.logger:
                 self.logger.warning(f"设置Canvas背景色失败: {e}")

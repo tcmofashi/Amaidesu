@@ -205,9 +205,10 @@ class STTPlugin(BasePlugin):
                         skip_validation=True,
                     )
                     self.logger.info("Silero VAD 模型加载成功 (本地缓存)。")
+                    self.vad_enabled = True
                 except Exception:
                     self.logger.warning("VAD 功能将不可用，禁用 STT 插件。")
-                self.vad_enabled = False
+                    self.vad_enabled = False
         else:
             self.logger.info("VAD 在配置中被禁用，无法运行真流式 STT，禁用插件。")
             self.vad_enabled = False  # Keep this to indicate VAD is off

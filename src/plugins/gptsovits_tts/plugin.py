@@ -620,12 +620,10 @@ class TTSPlugin(BasePlugin):
         self.input_pcm_queue = deque(b"")
         # 为音频数据队列添加最大长度限制，防止内存占用过高
         self.audio_data_queue = deque(maxlen=1000)  # 限制缓冲区大小，防止内存占用过高
-        
-        
+
         # 当前处理消息数据
         self.msg_id = ""
         self.message = None
-        
 
         self.stream = None
 
@@ -732,7 +730,9 @@ class TTSPlugin(BasePlugin):
                 try:
                     # 异步发送音频数据进行口型同步分析
                     self.logger.debug(f"发送音频数据进行口型同步分析: {len(pcm_data)}")
-                    await self.vts_lip_sync_service.process_tts_audio(pcm_data, sample_rate=self.tts_config.tts.sample_rate)
+                    await self.vts_lip_sync_service.process_tts_audio(
+                        pcm_data, sample_rate=self.tts_config.tts.sample_rate
+                    )
                 except Exception as e:
                     self.logger.debug(f"口型同步处理失败: {e}")
 
@@ -839,6 +839,7 @@ class TTSPlugin(BasePlugin):
         # 使用消息锁确保同一时间只处理一条消息
         async with self.message_lock:
             self.logger.debug("获取消息处理锁，开始处理消息")
+            self.logger.debug(f"收到消息: {message}")
 
             # 检查消息段是否存在且类型为 'text'
             def process_seg(seg: Seg) -> str:
@@ -848,9 +849,11 @@ class TTSPlugin(BasePlugin):
                         text += process_seg(s)
                 elif seg.type == "tts_text":
                     # 用冒号分割，取第一个和后面的所有
-                    msg_id, text = seg.data.split(':', 1)
+                    msg_id, text = seg.data.split(":", 1)
                     self.msg_id = msg_id
                     self.logger.info(f"收到TTS文本消息，msg_id: {msg_id}, text: {text}")
+                elif seg.type == "text":
+                    text = seg.data
                 elif seg.type == "reply":
                     # 处理回复类型的seg，通过消息缓存服务获取原始消息内容
                     message_cache_service = self.core.get_service("message_cache")
@@ -874,7 +877,7 @@ class TTSPlugin(BasePlugin):
                 return text
 
             self.message = message
-            
+
             if message.message_segment:
                 original_text = process_seg(message.message_segment)
                 if not isinstance(original_text, str) or not original_text.strip():
@@ -979,10 +982,9 @@ class TTSPlugin(BasePlugin):
                         self.logger.warning(f"口型同步功能不可用：未找到服务 '{service_name}' 或 warudo。")
 
         # --- 获取回复页面管理器 ---
-        reply_manager : ReplyGenerationManager = self.core.get_service("reply_generation_manager")
+        reply_manager: ReplyGenerationManager = self.core.get_service("reply_generation_manager")
         if not reply_manager:
             self.logger.warning("未找到回复页面管理器服务，回复页面功能将不可用")
-            return
 
         self.logger.info(f"请求播放: '{text[:30]}...'")
 
@@ -995,8 +997,9 @@ class TTSPlugin(BasePlugin):
 
         # --- 启动回复生成显示 ---
         try:
-            await reply_manager.start_generation("AI")  # 使用固定用户名"AI"
-            self.logger.debug("回复生成页面已启动")
+            if reply_manager is not None:
+                await reply_manager.start_generation("AI")  # 使用固定用户名"AI"
+                self.logger.debug("回复生成页面已启动")
         except Exception as e:
             self.logger.error(f"启动回复生成页面失败: {e}")
 
@@ -1051,19 +1054,18 @@ class TTSPlugin(BasePlugin):
                     temp_path = None
 
                 all_audio_data = bytearray()
-                
+
                 # 用于计算播放进度的变量
                 text_length = len(text)
                 displayed_length = 0
                 chunk_count = 0
                 start_time = asyncio.get_event_loop().time()
                 estimated_total_duration = max(text_length * 0.5, 2.0)  # 估算总时长：每个字符0.15秒，最少2秒
-                
 
-                
                 # 创建音频流迭代器，在线程池中逐块处理，避免阻塞事件循环
                 async def get_next_chunk():
                     """在线程池中获取下一个音频块"""
+
                     def get_chunk():
                         try:
                             return next(audio_stream)
@@ -1072,10 +1074,10 @@ class TTSPlugin(BasePlugin):
                         except Exception as e:
                             self.logger.error(f"获取音频块时出错: {e}")
                             return None
-                    
+
                     # 在线程池中执行同步的next操作
                     return await asyncio.to_thread(get_chunk)
-                
+
                 # 流式处理音频块
                 while True:
                     chunk = await get_next_chunk()
@@ -1084,8 +1086,9 @@ class TTSPlugin(BasePlugin):
                         if displayed_length < text_length:
                             remaining_text = text[displayed_length:]
                             try:
-                                await reply_manager.add_chunk(remaining_text)
-                                self.logger.debug(f"流结束，显示剩余文本: {remaining_text}")
+                                if reply_manager:
+                                    await reply_manager.add_chunk(remaining_text)
+                                    self.logger.debug(f"流结束，显示剩余文本: {remaining_text}")
                             except Exception as e:
                                 self.logger.error(f"显示剩余文本失败: {e}")
                         break
@@ -1097,26 +1100,30 @@ class TTSPlugin(BasePlugin):
                         # 优化的进度计算：基于时间的播放进度更准确
                         current_time = asyncio.get_event_loop().time()
                         elapsed_time = current_time - start_time
-                        
+
                         # 主要基于时间进度，辅以音频块进度验证
                         time_progress = min(elapsed_time / estimated_total_duration, 1.0)
                         chunk_progress = min(chunk_count * 0.03, 1.0)  # 每个chunk代表约6%的进度
-                        
+
                         # 时间进度为主（80%），音频块进度为辅（20%）
-                        estimated_progress = (time_progress * 0.7 + chunk_progress * 0.3)  
-                        
+                        estimated_progress = time_progress * 0.7 + chunk_progress * 0.3
+
                         # 确保进度不会倒退，并为初始显示预留空间
                         estimated_progress = max(estimated_progress, displayed_length / text_length)
                         target_length = int(text_length * estimated_progress)
-                        
+
                         # 逐字添加文本到回复页面
                         if target_length > displayed_length:
                             new_text = text[displayed_length:target_length]
                             if new_text:
                                 try:
-                                    await reply_manager.add_chunk(new_text)
-                                    displayed_length = target_length
-                                    self.logger.debug(f"回复页面显示进度: {displayed_length}/{text_length} ({estimated_progress:.2%}) 时间:{elapsed_time:.1f}s")
+                                    if reply_manager:
+                                        # 添加新文本到回复页面
+                                        await reply_manager.add_chunk(new_text)
+                                        displayed_length = target_length
+                                        self.logger.debug(
+                                            f"回复页面显示进度: {displayed_length}/{text_length} ({estimated_progress:.2%}) 时间:{elapsed_time:.1f}s"
+                                        )
                                 except Exception as e:
                                     self.logger.error(f"更新回复页面失败: {e}")
 
@@ -1175,7 +1182,7 @@ class TTSPlugin(BasePlugin):
                             while len(self.audio_data_queue) >= self.audio_data_queue.maxlen * 0.8:
                                 await asyncio.sleep(0.05)  # 短暂等待，让音频播放追赶队列
 
-                                                        # 修改为异步调用
+                                # 修改为异步调用
                             await self.decode_and_buffer(chunk)
 
                 # 将收集到的所有音频数据写入文件
@@ -1189,18 +1196,20 @@ class TTSPlugin(BasePlugin):
 
                 # --- 完成回复生成显示 ---
                 try:
-                    await reply_manager.complete_generation()
-                    self.logger.debug("回复生成页面已完成")
+                    if reply_manager:
+                        await reply_manager.complete_generation()
+                        self.logger.debug("回复生成页面已完成")
                 except Exception as e:
                     self.logger.error(f"完成回复生成页面失败: {e}")
-                
+
                 await self.send_done_message()
                 self.logger.info(f"音频流播放完成: '{text[:30]}...'")
             except Exception as e:
                 self.logger.error(f"音频流处理出错: {e}", exc_info=True)
                 # 如果出错，也要清空回复页面
                 try:
-                    await reply_manager.clear_generation()
+                    if reply_manager:
+                        await reply_manager.clear_generation()
                 except Exception as clear_error:
                     self.logger.error(f"清空回复生成页面失败: {clear_error}")
             finally:
@@ -1210,18 +1219,17 @@ class TTSPlugin(BasePlugin):
                         await lip_sync_service.stop_lip_sync_session()
                     except Exception as e:
                         self.logger.debug(f"停止口型同步会话失败: {e}")
-                        
+
     async def send_done_message(self):
         if not self.message:
             return
-        
+
         message_info = self.message.message_info
         message_info.time = time.time()
         message_segment = Seg(type="voice_done", data=f"{self.msg_id}")
-        
+
         message = MessageBase(message_info=message_info, message_segment=message_segment, raw_message=f"{self.msg_id}")
         await self.core.send_to_maicore(message)
-    
 
     def _generate_wav_header(self, data_size, sample_rate, channels, bits_per_sample):
         """生成标准WAV文件头

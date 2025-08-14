@@ -333,12 +333,19 @@ class VTubeStudioPlugin(BasePlugin):
             return None
 
     async def _load_hotkeys(self):
-        """获取热键列表"""
+        """获取热键列表，热键对象中包含 name 和 hotkeyID 等属性"""
         # 获取热键列表
         self.hotkey_list = await self.get_hotkey_list()
         if not self.hotkey_list:
             self.logger.warning("无法获取热键列表")
             return
+
+        # 打印热键列表，帮助调试
+        if self.hotkey_list and len(self.hotkey_list) > 0:
+            self.logger.debug(f"热键结构示例: {self.hotkey_list[0]}")
+            # 打印热键名称列表
+            hotkey_names = [f"{h.get('name')} (ID: {h.get('hotkeyID')})" for h in self.hotkey_list]
+            self.logger.debug(f"可用热键: {', '.join(hotkey_names)}")
 
         self.logger.info(f"成功加载 {len(self.hotkey_list)} 个热键")
 
@@ -506,16 +513,21 @@ class VTubeStudioPlugin(BasePlugin):
         else:
             self.logger.debug(f"未找到与vtb_text匹配的热键: {text_data}")
 
-    async def trigger_hotkey(self, hotkey_id: str) -> bool:
+    async def trigger_hotkey(self, hotkey_id: Optional[str]) -> bool:
         """
         Triggers a hotkey in VTube Studio by its ID.
 
         Args:
-            hotkey_id: The ID of the hotkey to trigger.Hotkey name or unique id of hotkey to execute, can be obtained via VTSRequest.requestHotKeyList()
+            hotkey_id: The ID of the hotkey to trigger. Can be obtained via VTSRequest.requestHotKeyList() 
+                      as the "hotkeyID" property of each hotkey.
 
         Returns:
             True if the request was sent successfully, False otherwise.
         """
+        if not hotkey_id:
+            self.logger.error("无法触发热键: 热键ID为空")
+            return False
+            
         if not self._is_connected_and_authenticated or not self.vts:
             self.logger.warning(f"Cannot trigger hotkey '{hotkey_id}': Not connected or authenticated.")
             return False
@@ -745,7 +757,11 @@ class VTubeStudioPlugin(BasePlugin):
                 # 直接尝试匹配热键名称
                 for hotkey in self.hotkey_list:
                     if hotkey.get("name") == selected_hotkey:
-                        hotkey_id = hotkey.get("id")
+                        # 修正: 使用正确的 hotkeyID 属性名
+                        hotkey_id = hotkey.get("hotkeyID")
+                        if not hotkey_id:
+                            self.logger.warning(f"找到热键 '{selected_hotkey}' 但其ID为空，无法触发")
+                            continue
                         self.logger.info(f"触发热键: {selected_hotkey} (ID: {hotkey_id})")
                         await self.trigger_hotkey(hotkey_id)
                         return
@@ -774,15 +790,19 @@ class VTubeStudioPlugin(BasePlugin):
             # 直接使用action_str作为热键名称或ID
             # 遍历热键列表，寻找匹配的热键
             for hotkey in self.hotkey_list:
-                if hotkey.get("id") == action_str:
+                if hotkey.get("hotkeyID") == action_str:
                     self.logger.info(f"匹配到热键ID: {action_str}")
                     await self.trigger_hotkey(action_str)
                     return
 
                 hotkey_name = hotkey.get("name", "")
                 if hotkey_name == action_str:
-                    self.logger.info(f"匹配到热键名称: {hotkey_name}")
-                    await self.trigger_hotkey(hotkey.get("id"))
+                    hotkey_id = hotkey.get("hotkeyID")
+                    if hotkey_id:
+                        self.logger.info(f"匹配到热键名称: {hotkey_name}")
+                        await self.trigger_hotkey(hotkey_id)
+                    else:
+                        self.logger.warning(f"找到热键名称 '{hotkey_name}' 但其ID为空，无法触发")
                     return
 
             self.logger.warning(f"未找到与body_action '{action_str}' 匹配的热键")
@@ -844,8 +864,12 @@ class VTubeStudioPlugin(BasePlugin):
                 for hotkey in self.hotkey_list:
                     hotkey_name = hotkey.get("name", "")
                     if hotkey_name == action_str:
-                        self.logger.info(f"匹配到热键名称: {hotkey_name}")
-                        await self.trigger_hotkey(hotkey.get("id"))
+                        hotkey_id = hotkey.get("hotkeyID")
+                        if hotkey_id:
+                            self.logger.info(f"匹配到热键名称: {hotkey_name}")
+                            await self.trigger_hotkey(hotkey_id)
+                        else:
+                            self.logger.warning(f"找到热键名称 '{hotkey_name}' 但其ID为空，无法触发")
                         return
 
             # 2. 如果是字典类型，可能是坐标参数

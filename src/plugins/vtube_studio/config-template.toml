@@ -54,6 +54,11 @@ llm_model = "deepseek-chat"                    # LLM模型名称
 llm_temperature = 0.1                          # LLM温度参数，越低越稳定
 llm_max_tokens = 100                           # LLM最大返回token数
 
+# === 模板信息配置 ===
+enable_template_info = true    # 是否启用模板信息功能，允许通过message_base中的template_info重载prompt
+template_name = "vtube_studio" # 模板名称，在消息中指定此名称时使用该模板
+
+
 # 消息类型处理配置（从Warudo迁移）
 [vtube_studio.message_types]
 emotion_enabled = true     # 是否处理情绪(emotion)类型的消息
@@ -72,3 +77,32 @@ shy = ["害羞", "脸红", "羞涩", "不好意思", "羞耻", "腼腆"]
 wink = ["眨眼", "wink", "眨眨眼", "眨眼睛", "抛媚眼"]
 helpless = ["无奈", "无语", "郁闷", "叹气", "叹息"]
 confused = ["疑惑", "困惑", "不解", "迷茫", "纳闷"]
+
+# 情绪数值到热键映射配置
+# 根据情绪四维度值（joy, anger, sorrow, fear）自动选择合适的热键
+[vtube_studio.emotion_value_mapping]
+# 基于情绪主导维度的热键映射
+# 当某个情绪维度值达到阈值且为主导情绪时触发
+# 格式: 情绪类型_阈值 = "热键名称"
+joy_high = "HappyShakehead"   # 高喜悦触发
+joy_medium = "HappyNod"       # 中等喜悦触发
+anger_high = "Angry"          # 高愤怒触发
+anger_medium = "Surprised"    # 中等愤怒触发
+sorrow_high = "SadCry"        # 高悲伤触发
+sorrow_medium = "Helpless"    # 中等悲伤触发
+fear_high = "ShyShakeHead"    # 高恐惧触发
+fear_medium = "ConfusedThink" # 中等恐惧触发
+
+# 情绪混合状态的热键映射
+# 当多个情绪维度同时较高时触发
+# 格式: 情绪类型1_情绪类型2 = "热键名称"
+joy_fear = "ShyHappyShake"   # 喜悦+恐惧混合
+joy_anger = "SurprisedWink"  # 喜悦+愤怒混合
+sorrow_fear = "ShyShakeHead" # 悲伤+恐惧混合
+
+# 情绪阈值配置
+[vtube_studio.emotion_thresholds]
+high = 7     # 高情绪阈值 (7-10)
+medium = 4   # 中等情绪阈值 (4-6)
+low = 1      # 低情绪阈值 (1-3)
+dominant = 2 # 主导情绪差值 (某情绪比其他情绪至少高出这个值才算主导)

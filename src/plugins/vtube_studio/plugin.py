@@ -1,6 +1,7 @@
 # src/plugins/vtube_studio/plugin.py
 
 import asyncio
+import random
 from typing import Any, Dict, Optional, TYPE_CHECKING, List
 import numpy as np
 import threading
@@ -94,12 +95,36 @@ class VTubeStudioPlugin(BasePlugin):
         self.llm_temperature = self.config.get("llm_temperature", 0.1)
         self.llm_max_tokens = self.config.get("llm_max_tokens", 100)
 
+        # 模板相关配置
+        self.enable_template_info = self.config.get("enable_template_info", True)
+        self.template_name = self.config.get("template_name", "vtube_studio")
+
         # 消息类型处理配置
         message_types_config = self.config.get("message_types", {})
         self.vtb_text_enabled = message_types_config.get("vtb_text_enabled", True)
         self.emotion_enabled = message_types_config.get("emotion_enabled", True)
         self.body_action_enabled = message_types_config.get("body_action_enabled", True)
         self.head_action_enabled = message_types_config.get("head_action_enabled", True)
+
+        # 情绪值到热键映射配置
+        emotion_value_config = self.config.get("emotion_value_mapping", {})
+        self.emotion_value_mapping = emotion_value_config or {
+            "joy_high": "HappyShakehead",
+            "joy_medium": "HappyNod",
+            "anger_high": "Angry",
+            "anger_medium": "Surprised",
+            "sorrow_high": "SadCry",
+            "sorrow_medium": "Helpless",
+            "fear_high": "ShyShakeHead",
+            "fear_medium": "ConfusedThink",
+            "joy_fear": "ShyHappyShake",
+            "joy_anger": "SurprisedWink",
+            "sorrow_fear": "ShyShakeHead",
+        }
+
+        # 情绪阈值配置
+        emotion_thresholds_config = self.config.get("emotion_thresholds", {})
+        self.emotion_thresholds = emotion_thresholds_config or {"high": 7, "medium": 4, "low": 1, "dominant": 2}
 
         # 预设的表情/热键库
         self.emotion_hotkey_mapping = self.config.get(
@@ -600,6 +625,7 @@ class VTubeStudioPlugin(BasePlugin):
     async def _handle_emotion_data(self, emotion_data: Any):
         """
         处理从MaiCore收到的心情数据，映射到VTubeStudio热键
+        处理四维情绪值格式: {"joy": 5, "anger": 1, "sorrow": 1, "fear": 1}
 
         Args:
             emotion_data: 心情数据，可能是字典或JSON字符串
@@ -619,76 +645,144 @@ class VTubeStudioPlugin(BasePlugin):
                 self.logger.warning(f"不支持的emotion数据类型: {type(emotion_data)}")
                 return
 
-            self.logger.debug(f"解析后的心情数据: {mood_data}")
+            self.logger.info(f"处理情绪数据: {mood_data}")
 
-            # 获取心情类型
-            mood_type = mood_data.get("type", "")
-
-            # 查找对应的热键映射
-            if mood_type and mood_type in self.emotion_hotkey_mapping:
-                # 获取匹配的热键关键词列表
-                matching_keywords = self.emotion_hotkey_mapping[mood_type]
-
-                # 遍历热键列表，寻找匹配的热键
-                for hotkey in self.hotkey_list:
-                    hotkey_name = hotkey.get("name", "").lower()
-                    for keyword in matching_keywords:
-                        if keyword.lower() in hotkey_name:
-                            # 找到匹配的热键，触发它
-                            hotkey_id = hotkey.get("id")
-                            if hotkey_id:
-                                self.logger.info(f"基于心情 '{mood_type}' 触发热键: {hotkey_name}")
-                                await self.trigger_hotkey(hotkey_id)
-                                return
-
-                self.logger.warning(f"未找到与心情 '{mood_type}' 匹配的热键")
-            else:
-                self.logger.debug(f"未配置心情 '{mood_type}' 的热键映射")
+            # 直接处理四维情绪值
+            await self._handle_emotion_values(mood_data)
 
         except Exception as e:
             self.logger.error(f"处理emotion数据时出错: {e}", exc_info=True)
+
+    async def _handle_emotion_values(self, emotion_data: Dict[str, Any]):
+        """
+        处理基于四维情绪值的热键选择
+
+        Args:
+            emotion_data: 包含情绪值的字典，如 {"joy": 5, "anger": 1, "sorrow": 1, "fear": 1}
+        """
+        try:
+            # 获取情绪值
+            joy = float(emotion_data.get("joy", 1))
+            anger = float(emotion_data.get("anger", 1))
+            sorrow = float(emotion_data.get("sorrow", 1))
+            fear = float(emotion_data.get("fear", 1))
+
+            thresholds = self.emotion_thresholds
+
+            high_threshold = thresholds.get("high", 7)
+            medium_threshold = thresholds.get("medium", 4)
+            dominant_diff = thresholds.get("dominant", 2)
+
+            emotion_mapping = self.emotion_value_mapping
+
+            # 使用默认映射如果上述都不可用
+            if not emotion_mapping:
+                emotion_mapping = {
+                    "joy_high": "HappyShakehead",
+                    "joy_medium": "HappyNod",
+                    "anger_high": "Angry",
+                    "anger_medium": "Surprised",
+                    "sorrow_high": "SadCry",
+                    "sorrow_medium": "Helpless",
+                    "fear_high": "ShyShakeHead",
+                    "fear_medium": "ConfusedThink",
+                    "joy_fear": "ShyHappyShake",
+                    "joy_anger": "SurprisedWink",
+                    "sorrow_fear": "ShyShakeHead",
+                }
+
+            # 计算主导情绪
+            emotions = {"joy": joy, "anger": anger, "sorrow": sorrow, "fear": fear}
+            sorted_emotions = sorted(emotions.items(), key=lambda x: x[1], reverse=True)
+            dominant_emotion = sorted_emotions[0][0]
+            dominant_value = sorted_emotions[0][1]
+            second_emotion = sorted_emotions[1][0]
+            second_value = sorted_emotions[1][1]
+
+            # 日志记录
+            self.logger.info(f"情绪值: joy={joy:.1f}, anger={anger:.1f}, sorrow={sorrow:.1f}, fear={fear:.1f}")
+            self.logger.info(
+                f"主导情绪: {dominant_emotion}={dominant_value:.1f}, 次要情绪: {second_emotion}={second_value:.1f}"
+            )
+
+            # 选择热键
+            selected_hotkey = None
+
+            # 1. 检查情绪混合状态 (两个主要情绪都较高且接近)
+            if (
+                dominant_value >= medium_threshold
+                and second_value >= medium_threshold
+                and (dominant_value - second_value) < dominant_diff
+            ):
+                mixed_key = f"{dominant_emotion}_{second_emotion}"
+                if mixed_key in emotion_mapping:
+                    selected_hotkey = emotion_mapping[mixed_key]
+                    self.logger.info(f"使用情绪混合热键: {mixed_key} -> {selected_hotkey}")
+                else:
+                    self.logger.debug(f"未找到混合情绪映射: {mixed_key}")
+
+            # 2. 如果没有混合状态匹配，检查主导情绪的高/中等级别
+            if not selected_hotkey:
+                if dominant_value >= high_threshold:
+                    high_key = f"{dominant_emotion}_high"
+                    if high_key in emotion_mapping:
+                        selected_hotkey = emotion_mapping[high_key]
+                        self.logger.info(f"使用主导情绪(高)热键: {high_key} -> {selected_hotkey}")
+                    else:
+                        self.logger.debug(f"未找到主导情绪高级别映射: {high_key}")
+                elif dominant_value >= medium_threshold:
+                    medium_key = f"{dominant_emotion}_medium"
+                    if medium_key in emotion_mapping:
+                        selected_hotkey = emotion_mapping[medium_key]
+                        self.logger.info(f"使用主导情绪(中)热键: {medium_key} -> {selected_hotkey}")
+                    else:
+                        self.logger.debug(f"未找到主导情绪中级别映射: {medium_key}")
+                else:
+                    self.logger.debug(f"主导情绪({dominant_emotion}={dominant_value})低于阈值，不触发热键")
+
+            # 3. 如果找到匹配的热键，尝试触发
+            if selected_hotkey:
+                # 直接尝试匹配热键名称
+                for hotkey in self.hotkey_list:
+                    if hotkey.get("name") == selected_hotkey:
+                        hotkey_id = hotkey.get("id")
+                        self.logger.info(f"触发热键: {selected_hotkey} (ID: {hotkey_id})")
+                        await self.trigger_hotkey(hotkey_id)
+                        return
+
+                # 如果没有直接匹配，尝试通过ID触发
+                self.logger.info(f"未找到热键名称匹配，尝试直接以ID触发: {selected_hotkey}")
+                await self.trigger_hotkey(selected_hotkey)
+            else:
+                self.logger.debug("未找到匹配的情绪热键")
+
+        except Exception as e:
+            self.logger.error(f"处理情绪值数据时出错: {e}", exc_info=True)
 
     async def _handle_body_action(self, action_data: Any):
         """
         处理从MaiCore收到的身体动作数据，映射到VTubeStudio热键
 
         Args:
-            action_data: 动作数据，可能是字符串或其他类型
+            action_data: 动作数据，可能是大模型中的动作名称或直接的热键ID/名称
         """
         try:
-            action_str = str(action_data).lower()
-            self.logger.debug(f"处理body_action: {action_str}")
+            # 将输入转换为字符串以便处理
+            action_str = str(action_data)
+            self.logger.info(f"处理body_action: {action_str}")
 
-            # 简单映射一些常见的动作到热键
-            # 注意：这里假设VTubeStudio中已经配置了这些热键
-            action_hotkey_mapping = {
-                "bow": ["鞠躬", "bow"],
-                "wave": ["挥手", "wave"],
-                "dance": ["跳舞", "dance"],
-                "jump": ["跳跃", "jump"],
-                "nod": ["点头", "nod"],
-                "shake": ["摇头", "shake"],
-            }
+            # 直接使用action_str作为热键名称或ID
+            # 遍历热键列表，寻找匹配的热键
+            for hotkey in self.hotkey_list:
+                if hotkey.get("id") == action_str:
+                    self.logger.info(f"匹配到热键ID: {action_str}")
+                    await self.trigger_hotkey(action_str)
+                    return
 
-            # 遍历映射寻找匹配的动作
-            for _, keywords in action_hotkey_mapping.items():
-                if any(keyword in action_str for keyword in keywords):
-                    # 遍历热键列表寻找匹配的热键
-                    for hotkey in self.hotkey_list:
-                        hotkey_name = hotkey.get("name", "").lower()
-                        if any(keyword in hotkey_name for keyword in keywords):
-                            hotkey_id = hotkey.get("id")
-                            if hotkey_id:
-                                self.logger.info(f"基于body_action '{action_str}' 触发热键: {hotkey_name}")
-                                await self.trigger_hotkey(hotkey_id)
-                                return
-
-            # 如果没有找到匹配的热键，使用LLM进行匹配
-            if self.llm_matching_enabled:
-                best_hotkey = await self._find_best_matching_hotkey_with_llm(action_str)
-                if best_hotkey:
-                    self.logger.info(f"基于LLM为body_action触发热键: {best_hotkey}")
-                    await self.trigger_hotkey(best_hotkey)
+                hotkey_name = hotkey.get("name", "")
+                if hotkey_name == action_str:
+                    self.logger.info(f"匹配到热键名称: {hotkey_name}")
+                    await self.trigger_hotkey(hotkey.get("id"))
                     return
 
             self.logger.warning(f"未找到与body_action '{action_str}' 匹配的热键")
@@ -701,70 +795,78 @@ class VTubeStudioPlugin(BasePlugin):
         处理从MaiCore收到的头部动作数据，映射到VTubeStudio参数或热键
 
         Args:
-            action_data: 动作数据，可能是字符串或其他类型
+            action_data: 动作数据，可能是坐标值如"(x,y,z)"或直接的参数值
         """
         try:
-            action_str = str(action_data).lower()
-            self.logger.debug(f"处理head_action: {action_str}")
+            self.logger.info(f"处理head_action: {action_data}")
 
-            # 某些头部动作可以映射到参数值
-            # 注意：参数名称需要根据实际VTubeStudio模型调整
-            if "left" in action_str:
-                # 头向左转
-                await self.set_parameter_value("HeadAngleX", -15)
-                self.logger.info("设置头部向左转")
-                return
-            elif "right" in action_str:
-                # 头向右转
-                await self.set_parameter_value("HeadAngleX", 15)
-                self.logger.info("设置头部向右转")
-                return
-            elif "up" in action_str:
-                # 头向上抬
-                await self.set_parameter_value("HeadAngleY", 15)
-                self.logger.info("设置头部向上抬")
-                return
-            elif "down" in action_str:
-                # 头向下低
-                await self.set_parameter_value("HeadAngleY", -15)
-                self.logger.info("设置头部向下低")
-                return
-            elif "tilt" in action_str:
-                # 头部倾斜
-                await self.set_parameter_value("HeadAngleZ", 10)
-                self.logger.info("设置头部倾斜")
-                return
-            elif "reset" in action_str or "center" in action_str:
-                # 重置头部位置
-                await self.set_parameter_value("HeadAngleX", 0)
-                await self.set_parameter_value("HeadAngleY", 0)
-                await self.set_parameter_value("HeadAngleZ", 0)
-                self.logger.info("重置头部位置")
-                return
+            # 1. 如果是字符串类型的指令，尝试进行处理
+            if isinstance(action_data, str):
+                action_str = str(action_data)
+                action_str_lower = action_str.lower()
 
-            # 如果没有直接映射到参数，尝试使用热键
-            # 遍历热键列表寻找匹配的热键
-            head_keywords = ["head", "头部", "点头", "摇头", "头"]
-            for hotkey in self.hotkey_list:
-                hotkey_name = hotkey.get("name", "").lower()
-                if any(keyword in hotkey_name for keyword in head_keywords) and any(
-                    keyword in action_str for keyword in ["nod", "shake", "点头", "摇头"]
-                ):
-                    hotkey_id = hotkey.get("id")
-                    if hotkey_id:
-                        self.logger.info(f"基于head_action '{action_str}' 触发热键: {hotkey_name}")
-                        await self.trigger_hotkey(hotkey_id)
-                        return
-
-            # 如果没有找到匹配的热键，使用LLM进行匹配
-            if self.llm_matching_enabled:
-                best_hotkey = await self._find_best_matching_hotkey_with_llm(action_str)
-                if best_hotkey:
-                    self.logger.info(f"基于LLM为head_action触发热键: {best_hotkey}")
-                    await self.trigger_hotkey(best_hotkey)
+                # 直接处理特殊预定义指令
+                if action_str_lower == "random":
+                    # 随机生成头部朝向
+                    x = random.uniform(-0.5, 0.5)
+                    y = random.uniform(-0.3, 0.5)
+                    z = random.uniform(-0.3, 0.3)
+                    await self.set_parameter_value("FaceAngleX", x * 30)
+                    await self.set_parameter_value("FaceAngleY", y * 30)
+                    await self.set_parameter_value("FaceAngleZ", z * 15)
+                    self.logger.info(f"设置随机头部朝向: X={x:.2f}, Y={y:.2f}, Z={z:.2f}")
+                    return
+                elif action_str_lower == "camera" or action_str_lower == "reset" or action_str_lower == "center":
+                    # 重置头部位置，看向摄像机
+                    await self.set_parameter_value("FaceAngleX", 0)
+                    await self.set_parameter_value("FaceAngleY", 0)
+                    await self.set_parameter_value("FaceAngleZ", 0)
+                    self.logger.info("重置头部朝向到中心位置")
                     return
 
-            self.logger.warning(f"未找到与head_action '{action_str}' 匹配的热键或参数")
+                # 尝试解析坐标格式如 "(x,y,z)"
+                try:
+                    # 去除括号并分割
+                    coords = action_str.strip("()").split(",")
+                    if len(coords) == 3:
+                        x = float(coords[0]) * 30  # 乘以30转换为角度
+                        y = float(coords[1]) * 30
+                        z = float(coords[2]) * 15  # Z轴角度通常较小
+                        await self.set_parameter_value("FaceAngleX", x)
+                        await self.set_parameter_value("FaceAngleY", y)
+                        await self.set_parameter_value("FaceAngleZ", z)
+                        self.logger.info(f"设置头部朝向: X={x:.2f}, Y={y:.2f}, Z={z:.2f}")
+                        return
+                except (ValueError, IndexError):
+                    self.logger.debug(f"无法解析为坐标格式: {action_str}")
+
+                # 尝试作为热键名称处理
+                for hotkey in self.hotkey_list:
+                    hotkey_name = hotkey.get("name", "")
+                    if hotkey_name == action_str:
+                        self.logger.info(f"匹配到热键名称: {hotkey_name}")
+                        await self.trigger_hotkey(hotkey.get("id"))
+                        return
+
+            # 2. 如果是字典类型，可能是坐标参数
+            elif isinstance(action_data, dict):
+                if "x" in action_data or "y" in action_data or "z" in action_data:
+                    x = action_data.get("x", 0) * 30
+                    y = action_data.get("y", 0) * 30
+                    z = action_data.get("z", 0) * 15
+                    await self.set_parameter_value("FaceAngleX", x)
+                    await self.set_parameter_value("FaceAngleY", y)
+                    await self.set_parameter_value("FaceAngleZ", z)
+                    self.logger.info(f"设置头部朝向: X={x:.2f}, Y={y:.2f}, Z={z:.2f}")
+                    return
+
+            # 3. 如果是数值类型，假设是X轴旋转角度
+            elif isinstance(action_data, (int, float)):
+                await self.set_parameter_value("FaceAngleX", float(action_data))
+                self.logger.info(f"设置头部X轴角度: {float(action_data):.2f}")
+                return
+
+            self.logger.warning(f"未找到与head_action '{action_data}' 匹配的热键或参数")
 
         except Exception as e:
             self.logger.error(f"处理head_action数据时出错: {e}", exc_info=True)

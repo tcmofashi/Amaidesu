@@ -112,8 +112,13 @@ class LLMTextProcessorPlugin(BasePlugin):
         self.logger.debug(f"请求修正 STT: '{text[:50]}...'")
         corrected = await self._call_llm(prompt)
         if corrected:
+            # 检查 LLM 是否返回了 "None" 字符串，如果是则转换为 Python None
+            if corrected.strip().lower() == "none":
+                self.logger.info(f"LLM 判断输入 '{text}' 无意义，但保留原文")
+                return text  # 保留原文而不是返回 None
             self.logger.info(f"修正结果: '{corrected[:50]}...'")
-        return corrected
+            return corrected
+        return text  # 如果 LLM 调用失败，返回原文
 
     async def _call_llm(self, prompt: str) -> Optional[str]:
         """Internal method to call the LLM with retry logic."""
